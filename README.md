@@ -65,9 +65,26 @@ The focus symbol comes from wherever you last evaluated something, not from wher
 your cursor happens to be. So asking a question from the chat buffer still asks
 about the code you were working on, rather than about the word "slow".
 
+For the gptel side you have to say where the model lives first:
+`M-x seance-gptel-use-openai-compatible`, which prompts for a name, a host, and
+a model.
+
 Suspicious of an answer? `M-x seance-preview-context` shows you exactly what
 would be sent, without sending it. Nine times out of ten the snapshot was wrong
 before the model was.
+
+Doom users: `map!` the lot under your localleader and stop typing `M-x`.
+
+```elisp
+(after! sly
+  (map! :localleader :map lisp-mode-map
+        (:prefix ("a" . "ask")
+         :desc "Claude"             "a" #'seance-claude
+         :desc "Local model"        "l" #'seance-gptel
+         :desc "Preview context"    "p" #'seance-preview-context
+         :desc "Pick local backend" "b" #'seance-gptel-use-openai-compatible
+         :desc "Clear eval log"     "c" #'seance-clear-log)))
+```
 
 ### Conditions
 

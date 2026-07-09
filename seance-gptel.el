@@ -79,9 +79,16 @@ Small models follow tight instructions better than vibes."
   (unless (featurep 'gptel)
     (user-error "seance-gptel: gptel not available: install and configure")))
 
+;;;###autoload
 (defun seance-gptel-use-openai-compatible (name host model)
   "Point seance at a local OpenAI-compatible server (llama.cpp, ...).
 NAME labels the backend, HOST looks like \"localhost:8080\", MODEL is a symbol."
+  (interactive
+   (progn
+     (seance-gptel--require)
+     (list (read-string "Backend name: " "local")
+           (read-string "Host (host:port): " "localhost:8080")
+           (intern (read-string "Model: ")))))
   (seance-gptel--require)
   (setq seance-gptel-backend (gptel-make-openai name
                                                 :host host
