@@ -1,0 +1,120 @@
+# seance
+
+Commune with the live image.
+
+When you're twenty redefinitions deep at the REPL, the files on disk are fiction.
+The image is the truth. So stop pasting source into a chat window and send the
+image instead: the symbol at point, who calls it and what it calls, the last few
+REPL values, whatever conditions blew up recently, and the evals you just ran.
+
+It's a SLY contrib. There's an Emacs half that watches what you do, and a Lisp
+half that pokes around inside the running image. Talks to Claude, or to whatever
+local model you've got warm.
+
+## Two transports
+
+Both share the same guts; they only differ in where the snapshot ends up.
+
+- **`seance-claude`** — shells out to the `claude` CLI, headless. Runs on your
+  Claude Code subscription, so no API key. That's the only reason it exists.
+- **`seance-gptel`** — gptel, pointed at any OpenAI-compatible server. llama.cpp,
+  Ollama, MLX, whatever. Nothing leaves the box.
+
+gptel could talk to Claude too, but it wants an API key for the privilege.
+
+Load one or both. Loading both won't log your evals twice — there's one capture
+ring and one connection hook in the core.
+
+## You'll need
+
+SBCL and SLY. Emacs 28.1+. Then the `claude` CLI on your PATH for one transport,
+or gptel plus something to point it at for the other. The image side leans on
+`sb-introspect`, so SBCL is the only thing that's been tested.
+
+## Install
+
+```elisp
+;; packages.el
+(package! seance :recipe (:host github :repo "real-limoges/seance"
+                          :files ("seance*.el" "slynk-seance.lisp")))
+```
+
+```elisp
+;; config.el
+(after! sly
+  (when (require 'seance-claude nil t)
+    (define-key sly-mode-map (kbd "C-c C-S-y") #'seance-claude))
+  (when (require 'seance-gptel nil t)
+    (define-key sly-mode-map (kbd "C-c C-S-l") #'seance-gptel)))
+```
+
+`slynk-seance.lisp` has to sit next to `seance.el` — that's how it gets found.
+Otherwise just clone it and shove the directory on your `load-path`.
+
+Nothing to set up per session. On every SLY connection the core loads the image
+side and starts capturing. If a `slynk-seance.lisp` you've been editing is
+broken, you get a message in the echo area, not a faceful of SLDB.
+
+## Using it
+
+Point at a symbol, hit the key, a chat buffer opens. In the Claude one, `C-c C-c`
+sends and `C-c C-r` folds a fresh snapshot into your next message. The gptel one
+sends with whatever key gptel already uses, and re-snapshots every time.
+
+The focus symbol comes from wherever you last evaluated something, not from where
+your cursor happens to be. So asking a question from the chat buffer still asks
+about the code you were working on, rather than about the word "slow".
+
+Suspicious of an answer? `M-x seance-preview-context` shows you exactly what
+would be sent, without sending it. Nine times out of ten the snapshot was wrong
+before the model was.
+
+### Conditions
+
+Slynk rebinds `*debugger-hook*` per request, so we can't grab conditions
+automatically. Feed them in yourself:
+
+```lisp
+(handler-bind ((error #'slynk-seance:note-condition))
+  (your-flaky-thing))
+```
+
+They show up in the next snapshot, newest first.
+
+## Knobs
+
+Everything's a defcustom; `C-h v seance-` will show you the lot. The ones you'll
+actually touch:
+
+- `seance-profile` — `:lean` or `:full`. Lean trims the snapshot down for small
+  local models, which have small windows and big opinions. `seance-claude-profile`
+  overrides it to `:full`, because Claude can take it.
+- `seance-claude-extra-args` — `'("--disallowed-tools" "Edit" "Write" "Bash")` if
+  you want it answering questions rather than rearranging your repo.
+- `seance-claude-lean` — on by default. Runs the CLI in a neutral directory so it
+  doesn't drag your whole project's `CLAUDE.md` and hooks along for the ride.
+
+## Tests
+
+```sh
+make test
+```
+
+The Lisp suite loads the contrib into a real SBCL and checks the snapshot it
+produces. The Emacs suite stubs out `sly-eval` and checks everything up to the
+point where bytes leave the building. Nothing spends a token.
+
+If `make` can't find sly, tell it: `make test SLY_DIR=/path/to/sly`.
+
+## One thing worth knowing
+
+`slynk-backend:calls-who` returns `:NOT-IMPLEMENTED` on SBCL. It doesn't signal,
+it just hands you a keyword and lets you find out the hard way. So `callees` asks
+`sb-introspect` directly instead. Without that the callee list is silently always
+empty, and the one-hop expansion — the whole point of `:full` — never runs.
+
+Ask me how I know.
+
+## License
+
+BSD-2-Clause. See [LICENSE](LICENSE).

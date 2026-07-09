@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out sly (provides both the elisp and slynk)
+        uses: actions/checkout@v4
+        with:
+          repository: joaotavora/sly
+          path: .sly
+
+      - name: Install SBCL and Emacs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sbcl emacs-nox
+
+      - name: Byte-compile (warnings are errors)
+        run: make compile SLY_DIR="$GITHUB_WORKSPACE/.sly"
+
+      - name: Test the image side
+        env:
+          SEANCE_SLYNK_LOADER: ${{ github.workspace }}/.sly/slynk/slynk-loader.lisp
+        run: make test-lisp
+
+      - name: Test the Emacs side
+        run: make test-elisp SLY_DIR="$GITHUB_WORKSPACE/.sly"
