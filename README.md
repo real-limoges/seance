@@ -1,33 +1,30 @@
 # seance
 
-Commune with the live image.
+Come commune with the live image.
 
 When you're twenty redefinitions deep at the REPL, the files on disk are fiction.
-The image is the truth. So stop pasting source into a chat window and send the
-image instead: the symbol at point, who calls it and what it calls, the last few
+The image is the truth. So stop pasting source into a chat window. Relax, un-wind (the stack)
+and send the image instead: the symbol at point, who calls it and what it calls, the last few
 REPL values, whatever conditions blew up recently, and the evals you just ran.
 
-It's a SLY contrib. There's an Emacs half that watches what you do, and a Lisp
-half that pokes around inside the running image. Talks to Claude, or to whatever
-local model you've got warm.
+It's a SLY contrib. It talks to Claude, or to whatever local model you've got warm.
+It's half ELisp for integrating and half Common Lisp for working with the image.
 
 ## Two transports
-
-Both share the same guts; they only differ in where the snapshot ends up.
 
 - **`seance-claude`** — shells out to the `claude` CLI, headless. Runs on your
   Claude Code subscription, so no API key. That's the only reason it exists.
 - **`seance-gptel`** — gptel, pointed at any OpenAI-compatible server. llama.cpp,
   Ollama, MLX, whatever. Nothing leaves the box.
 
-gptel could talk to Claude too, but it wants an API key for the privilege.
+gptel could talk to Claude too, but it wants an API key for the privilege. I'm cheap.
 
 Load one or both. Loading both won't log your evals twice — there's one capture
-ring and one connection hook in the core.
+ring and one connection hook in the core. So rest easy, multi-model native.
 
 ## You'll need
 
-SBCL and SLY. Emacs 28.1+. Then the `claude` CLI on your PATH for one transport,
+SBCL and SLY. Emacs 28.1+ (I use Emacs 30.2). You need `claude` CLI on your PATH for one transport,
 or gptel plus something to point it at for the other. The image side leans on
 `sb-introspect`, so SBCL is the only thing that's been tested.
 
@@ -48,12 +45,12 @@ or gptel plus something to point it at for the other. The image side leans on
     (define-key sly-mode-map (kbd "C-c C-S-l") #'seance-gptel)))
 ```
 
-`slynk-seance.lisp` has to sit next to `seance.el` — that's how it gets found.
+`slynk-seance.lisp` has to sit next to `seance.el` — that's how it gets found. Don't fight it.
 Otherwise just clone it and shove the directory on your `load-path`.
 
 Nothing to set up per session. On every SLY connection the core loads the image
 side and starts capturing. If a `slynk-seance.lisp` you've been editing is
-broken, you get a message in the echo area, not a faceful of SLDB.
+broken, you get a message in the echo area, not a faceful of SLDB. You're welcome.
 
 ## Using it
 
@@ -73,7 +70,8 @@ Suspicious of an answer? `M-x seance-preview-context` shows you exactly what
 would be sent, without sending it. Nine times out of ten the snapshot was wrong
 before the model was.
 
-Doom users: `map!` the lot under your localleader and stop typing `M-x`.
+Doom users (me!): `map!` the lot under your localleader and stop typing `M-x`.
+Your wrists will thank you.
 
 ```elisp
 (after! sly
@@ -123,15 +121,15 @@ point where bytes leave the building. Nothing spends a token.
 
 If `make` can't find sly, tell it: `make test SLY_DIR=/path/to/sly`.
 
-## One thing worth knowing
+## Gotcha!
 
-`slynk-backend:calls-who` returns `:NOT-IMPLEMENTED` on SBCL. It doesn't signal,
-it just hands you a keyword and lets you find out the hard way. So `callees` asks
+You didn't think it would be this easy. `slynk-backend:calls-who` returns `:NOT-IMPLEMENTED` on SBCL. 
+It doesn't signal, it just hands you a keyword and lets you find out the hard way. So `callees` asks
 `sb-introspect` directly instead. Without that the callee list is silently always
 empty, and the one-hop expansion — the whole point of `:full` — never runs.
 
-Ask me how I know.
+Ask me how I know (plz don't)
 
-## License
+## License 
 
 BSD-2-Clause. See [LICENSE](LICENSE).
