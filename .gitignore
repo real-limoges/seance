@@ -3,3 +3,5 @@
 
 # CI checks sly out here
 /.sly/
+
+.DS_Store

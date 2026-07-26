@@ -104,16 +104,19 @@ NAME labels the backend, HOST looks like \"localhost:8080\", MODEL is a symbol."
 ;; Re-snapshot the image before each send. The image moved. It always moves.
 (defun seance-gptel-send ()
   "Refresh the snapshot into the system message, then send.
-Bound to whatever `gptel-send' is bound to inside the chat buffer."
+Bound to whatever `gptel-send' is bound to inside the chat buffer. The snapshot
+is fetched async -- so a slow or wedged image never freezes Emacs -- and the
+send fires once it lands."
   (interactive)
-  (setq-local gptel--system-message
-              (concat seance-gptel-preamble
-                      "\n\n"
-                      ;; we're in the chat buffer, so focus comes from whatever
-                      ;; CAPTURE stashed. see `seance--focus'
-                      (seance-context-string
-                       (or seance-gptel-profile seance-profile))))
-  (call-interactively #'gptel-send))
+  (message "seance-gptel: gathering the live-image snapshot...")
+  ;; we're in the chat buffer, so focus comes from whatever CAPTURE stashed.
+  ;; see `seance--focus'
+  (seance-context-string-async
+   (lambda (ctx)
+     (setq-local gptel--system-message
+                 (concat seance-gptel-preamble "\n\n" ctx))
+     (call-interactively #'gptel-send))
+   (or seance-gptel-profile seance-profile)))
 
 (defvar seance-gptel-chat-mode-map
   (let ((m (make-sparse-keymap)))

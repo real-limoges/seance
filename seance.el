@@ -178,7 +178,13 @@ get what you deserve."
 
 (defun seance-context-string (&optional profile)
   "What the image knows, via the slynk RPC, plus our own eval log.
-PROFILE overrides `seance-profile' just for this call."
+PROFILE overrides `seance-profile' just for this call.
+
+This blocks: `sly-eval' pumps the SLY loop and freezes all of Emacs until the
+image answers, which -- if the image is mid-computation, in SLDB, or otherwise
+wedged -- is forever. Nothing on a keystroke path should call this; those go
+through `seance-context-string-async'. Kept for tests and callers that already
+know they want to wait."
   (let* ((profile (or profile seance-profile))
          (focus   (seance--focus))
          (image   (condition-case err
@@ -190,19 +196,71 @@ PROFILE overrides `seance-profile' just for this call."
                              err)))))
     (concat image (seance--render-log))))
 
+(defun seance--image-context-async (focus profile k)
+  "Fetch the in-image snapshot for FOCUS at PROFILE, then call K with the string.
+Async on purpose. `slynk-seance:image-context' runs synchronously in the Lisp,
+and reaching it through `sly-eval' would block all of Emacs until it returned --
+a hard freeze whenever the image is busy or wedged. `sly-eval-async' keeps the
+editor live; K fires with the image string once the reply lands.
+
+The form resolves the RPC by name at runtime rather than mentioning the
+`slynk-seance' package literally, so an image where the contrib never loaded
+comes back as a plain note instead of a read-time package error. Any error
+inside the RPC is caught in-image and returned as a string, matching the sync
+path's promise of no faceful of SLDB."
+  (if (not (sly-connected-p))
+      (funcall k ";; not connected to a Lisp image, so no live snapshot.\n")
+    (sly-eval-async
+        `(cl:let ((fn (cl:and (cl:find-package :slynk-seance)
+                              (cl:find-symbol "IMAGE-CONTEXT" :slynk-seance))))
+           (cl:if fn
+                  (cl:handler-case
+                      (cl:funcall fn ,(car focus) ,(cdr focus) ,profile)
+                    (cl:error (e)
+                     (cl:format nil ";; SLYNK-SEANCE:IMAGE-CONTEXT failed: ~A~%" e)))
+                  (cl:format nil (cl:concatenate 'cl:string
+                                                 ";; slynk-seance.lisp is not loaded in the image.~%"
+                                                 ";; (it loads on connect; M-x seance-install if you skipped that)~%"))))
+      k)))
+
+(defun seance-context-string-async (k &optional profile)
+  "Like `seance-context-string', but async: eventually call K with the string.
+Resolves the focus and log now, in the current buffer, then fires the image RPC
+without blocking. K runs with the assembled image-plus-log string, back in the
+buffer that was current when this was called -- so a chat buffer's callback
+still edits the chat buffer. PROFILE overrides `seance-profile' for this call."
+  (let* ((profile (or profile seance-profile))
+         (focus   (seance--focus))
+         (log     (seance--render-log))
+         (buf     (current-buffer)))
+    (seance--image-context-async
+     focus profile
+     (lambda (image)
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (funcall k (concat image log))))))))
+
 (defun seance-preview-context (&optional profile)
-  "Show exactly what would get sent, without calling anything.
+  "Show exactly what would get sent, without sending it.
 With a prefix argument, ask which PROFILE. Start here when an answer looks
-wrong -- usually the snapshot was wrong first."
+wrong -- usually the snapshot was wrong first. The snapshot arrives async, so
+the buffer pops up right away and fills in when the image replies."
   (interactive
    (list (when current-prefix-arg
            (intern (completing-read "Profile: " '(":lean" ":full") nil t)))))
   (let ((buf (get-buffer-create "*seance-context*")))
     (with-current-buffer buf
       (erase-buffer)
-      (insert (seance-context-string profile))
-      (goto-char (point-min)))
-    (display-buffer buf)))
+      (insert ";; fetching the live-image snapshot...\n"))
+    (display-buffer buf)
+    (seance-context-string-async
+     (lambda (s)
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (erase-buffer)
+           (insert s)
+           (goto-char (point-min)))))
+     profile)))
 
 
 ;;; AUTOLOAD -- get seance ready on every SLY connection.

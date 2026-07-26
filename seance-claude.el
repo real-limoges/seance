@@ -223,28 +223,40 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
                     (point-min))))
          (msg (string-trim (buffer-substring-no-properties start (point-max)))))
     (when (string-empty-p msg) (user-error "seance-claude: empty message"))
-    (let* ((ctx   (when (or (not seance-claude--started) seance-claude--refresh)
-                    ;; we're in the chat buffer, so focus comes from whatever
-                    ;; CAPTURE stashed back in the Lisp buffer. see `seance--focus'
-                    (seance-context-string (or seance-claude-profile seance-profile))))
-           (full  (if ctx
-                      (concat "Current live-image context:\n```\n" ctx "\n```\n\n" msg)
-                    msg))
-           (extra (if seance-claude--started
-                      (list "--resume" seance-claude--session)
-                    (list "--session-id" seance-claude--session
-                          "--system-prompt" seance-claude-preamble)))
-           (buf   (current-buffer)))
+    (let* ((want-ctx (or (not seance-claude--started) seance-claude--refresh))
+           (extra    (if seance-claude--started
+                         (list "--resume" seance-claude--session)
+                       (list "--session-id" seance-claude--session
+                             "--system-prompt" seance-claude-preamble)))
+           (buf      (current-buffer))
+           ;; spawn once we have the final prompt. The image fetch is async, so
+           ;; this may run a beat after the keystroke -- with Emacs live the
+           ;; whole time instead of frozen behind a synchronous `sly-eval'.
+           (go (lambda (full)
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (goto-char (point-max))
+                     (insert "\n\n## Claude\n\n")
+                     (seance-claude--spawn
+                      buf full extra
+                      (lambda ()
+                        (goto-char (point-max))
+                        (insert "\n\n## You\n\n")
+                        (let ((w (get-buffer-window buf)))
+                          (when w (set-window-point w (point-max)))))))))))
       (setq seance-claude--started t
             seance-claude--refresh nil)
-      (goto-char (point-max))
-      (insert "\n\n## Claude\n\n")
-      (seance-claude--spawn buf full extra
-                            (lambda ()
-                              (goto-char (point-max))
-                              (insert "\n\n## You\n\n")
-                              (let ((w (get-buffer-window buf)))
-                                (when w (set-window-point w (point-max)))))))))
+      (if want-ctx
+          (progn
+            (message "seance-claude: gathering the live-image snapshot...")
+            ;; we're in the chat buffer, so focus comes from whatever CAPTURE
+            ;; stashed back in the Lisp buffer. see `seance--focus'
+            (seance-context-string-async
+             (lambda (ctx)
+               (funcall go (concat "Current live-image context:\n```\n"
+                                   ctx "\n```\n\n" msg)))
+             (or seance-claude-profile seance-profile)))
+        (funcall go msg)))))
 
 ;;;###autoload
 (defun seance-claude ()
