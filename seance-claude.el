@@ -101,13 +101,21 @@ not your whole Claude Code project payload. Cheaper, faster, easier on the
           seance-claude-extra-args
           extra))
 
+(defun seance-claude--scroll-to-end (buffer)
+  "Park BUFFER's window, if it has one, on the end of BUFFER.
+Takes the buffer explicitly and reads `point-max' inside it, because the two
+callers run from a process filter and a sentinel, where the current buffer is
+whatever happened to be current when output landed."
+  (let ((w (get-buffer-window buffer)))
+    (when w
+      (set-window-point w (with-current-buffer buffer (point-max))))))
+
 (defun seance-claude--emit (target text)
   "Append TEXT at the end of TARGET and keep its window scrolled to the bottom."
   (when (and (stringp text) (> (length text) 0) (buffer-live-p target))
     (with-current-buffer target
       (save-excursion (goto-char (point-max)) (insert text)))
-    (let ((w (get-buffer-window target)))
-      (when w (set-window-point w (point-max))))))
+    (seance-claude--scroll-to-end target)))
 
 (defun seance-claude--handle-event (proc obj target)
   "Act on one parsed stream-json OBJ: text deltas go into TARGET.
@@ -130,22 +138,48 @@ deltas before it can still cough up the whole answer."
         ((and (not (process-get proc 'seance-claude-got-text)) (stringp res))
          (seance-claude--emit target res)))))))
 
+(defconst seance-claude--diag-lines 5
+  "How many non-JSON output lines to keep around as failure diagnostics.")
+
 (defun seance-claude--consume-line (proc line target)
   "Parse one stdout LINE of stream-json and do something with it.
-Cheap prefix test first, so the enormous SessionStart/hook events (and any
-stderr noise) get skipped without paying for a JSON parse."
-  (when (or (string-prefix-p "{\"type\":\"stream_event\"" line)
-            (string-prefix-p "{\"type\":\"result\"" line))
-    (let ((obj (ignore-errors
-                 (json-parse-string line :object-type 'hash-table
-                                    :null-object nil :false-object nil))))
-      (when obj (seance-claude--handle-event proc obj target)))))
+Cheap prefix test first, so the enormous SessionStart/hook events get skipped
+without paying for a JSON parse.
+
+A line that is not one of our two event shapes and not JSON at all gets kept
+as a possible diagnostic rather than dropped. `make-process' with `:stderr'
+nil folds standard error into this same stream, and those lines are the only
+explanation we ever get when the CLI fails."
+  (if (or (string-prefix-p "{\"type\":\"stream_event\"" line)
+          (string-prefix-p "{\"type\":\"result\"" line))
+      (let ((obj (ignore-errors
+                   (json-parse-string line :object-type 'hash-table
+                                      :null-object nil :false-object nil))))
+        (when obj (seance-claude--handle-event proc obj target)))
+    (let ((trimmed (string-trim line)))
+      (unless (or (string-empty-p trimmed) (string-prefix-p "{" trimmed))
+        (process-put proc 'seance-claude-diag
+                     (last (append (process-get proc 'seance-claude-diag)
+                                   (list trimmed))
+                           seance-claude--diag-lines))))))
+
+(defun seance-claude--failure-note (proc)
+  "Why PROC failed, with whatever the CLI said on its way out.
+You asking for the stop is not a failure worth explaining, so that case just
+says so and skips the diagnostics."
+  (if (process-get proc 'seance-claude-interrupted)
+      "\n;; stopped.\n"
+    (let ((diag (process-get proc 'seance-claude-diag)))
+      (concat (format "\n;; claude exited %d\n" (process-exit-status proc))
+              (mapconcat (lambda (line) (format ";; %s\n" line)) diag "")))))
 
 (defun seance-claude--spawn (target prompt extra &optional finalize)
   "Run claude with EXTRA args and PROMPT on stdin; stream the answer back.
 TARGET is where it lands. Output is `--output-format stream-json'; we pick the
 text deltas out and insert them live.
-FINALIZE, if you pass one, runs with no args in TARGET on exit."
+FINALIZE, if you pass one, runs in TARGET on exit with one argument: non-nil
+when the CLI exited cleanly. Callers need that to tell a turn that happened
+from one that did not -- see how `seance-claude-send' gates `--resume'."
   (let* ((default-directory (if seance-claude-lean
                                 (file-name-as-directory temporary-file-directory)
                               default-directory))
@@ -155,6 +189,7 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
                 :buffer nil
                 :noquery t
                 :connection-type 'pipe
+                :coding 'utf-8-unix
                 :command (cons exe (seance-claude--base-args extra))
                 :filter
                 (lambda (proc chunk)
@@ -167,18 +202,19 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
                         (seance-claude--consume-line proc line target)))))
                 :sentinel
                 (lambda (proc _event)
-                  (when (and (memq (process-status proc) '(exit signal))
-                             (buffer-live-p target))
+                  (when (memq (process-status proc) '(exit signal))
                     (let ((rest (process-get proc 'seance-claude-acc)))
                       (when (and rest (> (length rest) 0))
                         (seance-claude--consume-line proc rest target)))
-                    (with-current-buffer target
-                      (unless (zerop (process-exit-status proc))
-                        (save-excursion
-                          (goto-char (point-max))
-                          (insert (format "\n;; claude exited %d\n"
-                                          (process-exit-status proc)))))
-                      (when finalize (funcall finalize))))))))
+                    (when (buffer-live-p target)
+                      (let ((ok (and (eq (process-status proc) 'exit)
+                                     (zerop (process-exit-status proc)))))
+                        (with-current-buffer target
+                          (unless ok
+                            (save-excursion
+                              (goto-char (point-max))
+                              (insert (seance-claude--failure-note proc))))
+                          (when finalize (funcall finalize ok))))))))))
     (process-send-string proc prompt)
     (process-send-eof proc)
     proc))
@@ -188,20 +224,32 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
 ;;; turns share history; re-running folds a fresh snapshot into the next message.
 
 (defvar-local seance-claude--session nil "Claude session id for this chat buffer.")
-(defvar-local seance-claude--started nil "Non-nil once the session has its first turn.")
+(defvar-local seance-claude--started nil
+  "Non-nil once the CLI has actually completed a turn on this session.
+Set from the process sentinel on a clean exit, never at dispatch: it decides
+between `--session-id' and `--resume', and resuming a session the CLI never
+managed to create fails every time after.")
 (defvar-local seance-claude--refresh nil "Non-nil to ride a fresh snapshot next turn.")
+(defvar-local seance-claude--input-start nil
+  "Marker at the start of the message you are composing.
+Laid down with every `## You' prompt. Beats searching back for that heading,
+which cannot tell our prompt from the same line inside an answer Claude wrote.")
+(defvar-local seance-claude--proc nil
+  "The in-flight `claude' process for this chat buffer, if there is one.")
 
 (defvar seance-claude-chat-mode-map
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "C-c C-c") #'seance-claude-send)
     (define-key m (kbd "C-c C-r") #'seance-claude)
+    (define-key m (kbd "C-c C-k") #'seance-claude-interrupt)
     m)
   "Keymap for `seance-claude-chat-mode'.")
 
 (define-minor-mode seance-claude-chat-mode
   "Minor mode for a CLI-backed seance chat buffer.
 \\<seance-claude-chat-mode-map>Type after the `## You' prompt and hit
-\\[seance-claude-send] to send; \\[seance-claude] refreshes the snapshot."
+\\[seance-claude-send] to send; \\[seance-claude] refreshes the snapshot and
+\\[seance-claude-interrupt] stops an answer in progress."
   :lighter " Seance")
 
 (defun seance-claude--uuid ()
@@ -216,11 +264,11 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
   (interactive)
   (unless seance-claude--session
     (user-error "seance-claude: not a chat buffer (use M-x seance-claude)"))
-  (let* ((start (save-excursion
-                  (goto-char (point-max))
-                  (if (re-search-backward "^## You$" nil t)
-                      (line-beginning-position 2)
-                    (point-min))))
+  (when (process-live-p seance-claude--proc)
+    (user-error "seance-claude: still working on the last one (C-c C-k to stop it)"))
+  (let* ((start (or (and (markerp seance-claude--input-start)
+                         (marker-position seance-claude--input-start))
+                    (point-min)))
          (msg (string-trim (buffer-substring-no-properties start (point-max)))))
     (when (string-empty-p msg) (user-error "seance-claude: empty message"))
     (let* ((want-ctx (or (not seance-claude--started) seance-claude--refresh))
@@ -237,15 +285,20 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
                    (with-current-buffer buf
                      (goto-char (point-max))
                      (insert "\n\n## Claude\n\n")
-                     (seance-claude--spawn
-                      buf full extra
-                      (lambda ()
-                        (goto-char (point-max))
-                        (insert "\n\n## You\n\n")
-                        (let ((w (get-buffer-window buf)))
-                          (when w (set-window-point w (point-max)))))))))))
-      (setq seance-claude--started t
-            seance-claude--refresh nil)
+                     (setq seance-claude--proc
+                           (seance-claude--spawn
+                            buf full extra
+                            (lambda (ok)
+                              ;; a clean exit is the only proof the CLI created
+                              ;; the session, so a first turn that died leaves
+                              ;; the next send still asking for --session-id.
+                              (when ok (setq seance-claude--started t))
+                              (setq seance-claude--proc nil)
+                              (goto-char (point-max))
+                              (insert "\n\n## You\n\n")
+                              (setq seance-claude--input-start (point-marker))
+                              (seance-claude--scroll-to-end buf)))))))))
+      (setq seance-claude--refresh nil)
       (if want-ctx
           (progn
             (message "seance-claude: gathering the live-image snapshot...")
@@ -255,19 +308,37 @@ FINALIZE, if you pass one, runs with no args in TARGET on exit."
              (lambda (ctx)
                (funcall go (concat "Current live-image context:\n```\n"
                                    ctx "\n```\n\n" msg)))
-             (or seance-claude-profile seance-profile)))
+             (seance--profile seance-claude-profile)))
         (funcall go msg)))))
 
 ;;;###autoload
-(defun seance-claude ()
+(defun seance-claude-interrupt ()
+  "Stop the `claude' process currently answering in this buffer."
+  (interactive)
+  (unless (process-live-p seance-claude--proc)
+    (user-error "seance-claude: nothing in flight"))
+  (process-put seance-claude--proc 'seance-claude-interrupted t)
+  (delete-process seance-claude--proc)
+  (message "seance-claude: stopped"))
+
+;;;###autoload
+(defun seance-claude (&optional new)
   "Open (or refresh) a CLI-backed chat buffer seeded with the image context.
 Runs on your Claude Code subscription. Type after the `## You' prompt, then
 \\[seance-claude-send] to send. Re-run it mid-conversation to fold a fresh
-snapshot into your next message."
-  (interactive)
+snapshot into your next message.
+
+With a prefix argument, NEW starts a separate chat in its own buffer rather
+than refreshing an existing one, so two lines of inquiry can stay open at once.
+Run from inside a chat buffer it refreshes that buffer, not whichever one
+happens to hold the default name."
+  (interactive "P")
   (seance-claude--executable)           ; bail now if claude isn't there
-  (let* ((existing (get-buffer seance-claude-buffer-name))
-         (buf (get-buffer-create seance-claude-buffer-name)))
+  (let* ((name (cond (new (generate-new-buffer-name seance-claude-buffer-name))
+                     (seance-claude--session (buffer-name))
+                     (t seance-claude-buffer-name)))
+         (existing (get-buffer name))
+         (buf (get-buffer-create name)))
     (with-current-buffer buf
       (if existing
           (progn
@@ -280,8 +351,10 @@ snapshot into your next message."
               seance-claude--refresh nil)
         (insert "# seance-claude chat\n\n"
                 "Type below, then `C-c C-c' to send. `C-c C-r' refreshes the "
-                "image snapshot. Runs on your Claude Code subscription.\n\n"
-                "## You\n\n")))
+                "image snapshot, `C-c C-k' stops an answer in progress. "
+                "Runs on your Claude Code subscription.\n\n"
+                "## You\n\n")
+        (setq seance-claude--input-start (point-marker))))
     (pop-to-buffer buf)
     (goto-char (point-max))))
 

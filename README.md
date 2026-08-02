@@ -55,8 +55,13 @@ broken, you get a message in the echo area, not a faceful of SLDB. You're welcom
 ## Using it
 
 Point at a symbol, hit the key, a chat buffer opens. In the Claude one, `C-c C-c`
-sends and `C-c C-r` folds a fresh snapshot into your next message. The gptel one
-sends with whatever key gptel already uses, and re-snapshots every time.
+sends, `C-c C-r` folds a fresh snapshot into your next message, and `C-c C-k`
+stops an answer you've already seen enough of. The gptel one sends with whatever
+key gptel already uses, and re-snapshots every time.
+
+`C-u M-x seance-claude` opens a second chat in its own buffer, for when you want
+to keep one thread going and start another. `C-c C-r` from inside a chat always
+refreshes *that* chat.
 
 The focus symbol comes from wherever you last evaluated something, not from where
 your cursor happens to be. So asking a question from the chat buffer still asks
@@ -64,7 +69,15 @@ about the code you were working on, rather than about the word "slow".
 
 For the gptel side you have to say where the model lives first:
 `M-x seance-gptel-use-openai-compatible`, which prompts for a name, a host, and
-a model.
+a model. Prefix it (`C-u`) to save the answers, or skip the prompting entirely
+by putting them in your init:
+
+```elisp
+(setq seance-gptel-host "localhost:8080"
+      seance-gptel-model-name "qwen2.5-coder-7b")
+```
+
+The backend gets built from those the first time you open the chat.
 
 Suspicious of an answer? `M-x seance-preview-context` shows you exactly what
 would be sent, without sending it. Nine times out of ten the snapshot was wrong
@@ -81,20 +94,30 @@ Your wrists will thank you.
          :desc "Local model"        "l" #'seance-gptel
          :desc "Preview context"    "p" #'seance-preview-context
          :desc "Pick local backend" "b" #'seance-gptel-use-openai-compatible
+         :desc "Stop the answer"    "k" #'seance-claude-interrupt
          :desc "Clear eval log"     "c" #'seance-clear-log)))
 ```
 
 ### Conditions
 
-Slynk rebinds `*debugger-hook*` per request, so we can't grab conditions
-automatically. Feed them in yourself:
+Slynk rebinds `*debugger-hook*` around every request, so a handler installed
+globally is already out of scope by the time your form runs. Being inside the
+form is the only place you can see its conditions, which means wrapping it:
 
 ```lisp
-(handler-bind ((error #'slynk-seance:note-condition))
+(slynk-seance:with-captured-conditions
   (your-flaky-thing))
 ```
 
+That's `handler-bind` underneath, so it only looks: the condition still goes
+wherever it was going, SLDB included, and a body that doesn't signal returns
+its values untouched. `slynk-seance:note-condition` is still there if you want
+to build your own `handler-bind` around something narrower.
+
 They show up in the next snapshot, newest first.
+
+I'd rather this were automatic. It isn't, and the honest reason is above: there
+is no seam in slynk to hang it on that wouldn't break the next time slynk moves.
 
 ## Knobs
 
@@ -108,6 +131,14 @@ actually touch:
   you want it answering questions rather than rearranging your repo.
 - `seance-claude-lean` — on by default. Runs the CLI in a neutral directory so it
   doesn't drag your whole project's `CLAUDE.md` and hooks along for the ride.
+- `seance-context-limit`: 20000 chars, or nil for no ceiling. Everything else
+  here caps one item at a time; this caps the assembled total, which is the
+  number that has to fit in the window. Trims off the end and says where.
+
+On the image side, `slynk-seance:*max-definition-chars*` (600) caps any one
+printed definition. SBCL hands back the entire source of anything you defined at
+the REPL, which is everything you actually ask about, so without this a couple of
+long defuns are the whole snapshot.
 
 ## Tests
 
@@ -120,6 +151,10 @@ produces. The Emacs suite stubs out `sly-eval` and checks everything up to the
 point where bytes leave the building. Nothing spends a token.
 
 If `make` can't find sly, tell it: `make test SLY_DIR=/path/to/sly`.
+
+gptel is a soft dependency, so the tests that need it skip when it's absent.
+Point at it to run them: `make test GPTEL_DIR=/path/to/gptel`. CI runs the Emacs
+suite both ways, because both are real installs.
 
 ## Gotcha!
 

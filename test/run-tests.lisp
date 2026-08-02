@@ -123,12 +123,51 @@
        (null (call-sq "RESOLVE-SYMBOL" "#<not a symbol" :cl-user)))
   (chk "resolve-symbol does not eval"
        (null (call-sq "RESOLVE-SYMBOL" "#.(error \"pwned\")" :cl-user)))
+  ;; describing the image must not modify it: a typo under point used to get
+  ;; interned into the user's package and stay there.
+  (chk "resolve-symbol returns nil for a name the package does not have"
+       (null (call-sq "RESOLVE-SYMBOL" "no-such-symbol-please" :seance-fixture)))
+  (chk "resolve-symbol interned nothing while failing"
+       (null (nth-value 1 (find-symbol "NO-SUCH-SYMBOL-PLEASE" :seance-fixture))))
+  (chk "resolve-symbol leaves no scratch packages behind"
+       (notany (lambda (p) (search "SEANCE-READ-" (package-name p)))
+               (list-all-packages)))
   (chk "first-line stops at newline"
        (string= "a" (call-sq "FIRST-LINE" (format nil "a~%b"))))
   (chk "truncate-print caps length"
        (<= (length (call-sq "TRUNCATE-PRINT" (make-list 500 :initial-element 'x) 40)) 45))
   (chk "subseq-safe tolerates n > length"
        (equal '(1 2) (call-sq "SUBSEQ-SAFE" '(1 2) 99))))
+
+(section "symbol-summary -- a sprawling interactive definition gets capped"
+  ;; EVAL, not COMPILE-FILE: SBCL only retains the lambda expression for
+  ;; interactively defined functions, which is exactly the case the cap exists
+  ;; for. Everything you care about at a live REPL you defined interactively,
+  ;; so uncapped this branch is the one that dominates the snapshot.
+  (eval (read-from-string
+         (with-output-to-string (src)
+           (format src "(defun seance-fixture::sprawler (x) \"Sprawler doc.\" (declare (ignore x)) (list")
+           (dotimes (i 300)
+             (format src " ~S" "A Fairly Long String Element That Pads This Definition Out"))
+           (format src "))"))))
+  (let* ((sym     (find-symbol "SPRAWLER" :seance-fixture))
+         (lex     (nth-value 0 (function-lambda-expression (fdefinition sym))))
+         (summary (call-sq "SYMBOL-SUMMARY" sym))
+         (cap     (symbol-value (sq *max-definition-chars*))))
+    ;; if SBCL ever stops retaining this, the cap goes untested rather than
+    ;; silently broken -- so assert the precondition before the behavior.
+    (chk "SBCL retained the lambda expression (else this proves nothing)" lex)
+    (chk "uncapped the definition would have been enormous"
+         (> (length (prin1-to-string lex)) (* 4 cap)))
+    (chk "summary stays within a doc line or two of the cap"
+         (< (length summary) (+ cap 200)))
+    (chk "the truncation is visibly marked" (contains "..." summary))
+    (chk "the doc line still survives" (contains "doc: Sprawler doc." summary))
+    ;; *print-case* :downcase replaced a ~(~S~) that also flattened string
+    ;; literals inside the definition. Symbols downcase; strings must not.
+    (chk "symbols are downcased"        (contains "sprawler" summary))
+    (chk "string literals keep their case"
+         (contains "A Fairly Long String Element" summary))))
 
 (section "note-condition"
   (setf (symbol-value (sq *conditions*)) '())
@@ -142,6 +181,25 @@
   (chk= "ring is capped at *max-conditions*"
         (symbol-value (sq *max-conditions*))
         (length (symbol-value (sq *conditions*)))))
+
+(section "with-captured-conditions"
+  (setf (symbol-value (sq *conditions*)) '())
+  (chk "the macro is exported"
+       (eq :external (nth-value 1 (find-symbol "WITH-CAPTURED-CONDITIONS" :slynk-seance))))
+  ;; it observes and declines, so the error still reaches the caller's handler
+  (let ((reached nil))
+    (handler-case
+        (eval (read-from-string
+               "(slynk-seance:with-captured-conditions (error \"noted but not handled\"))"))
+      (error () (setf reached t)))
+    (chk "declines to handle, so the condition still propagates" reached))
+  (chk "and the condition landed in the ring"
+       (contains "noted but not handled" (first (symbol-value (sq *conditions*)))))
+  ;; a body that does not signal returns its values untouched
+  (chk= "passes values through"
+        3
+        (eval (read-from-string
+               "(slynk-seance:with-captured-conditions (+ 1 2))"))))
 
 (section "image-context -- :full vs :lean"
   (setf (symbol-value (sq *conditions*)) '())

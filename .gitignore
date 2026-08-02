@@ -1,7 +1,8 @@
 *.elc
 *.fasl
 
-# CI checks sly out here
+# CI checks its dependencies out here
 /.sly/
+/.gptel/
 
 .DS_Store

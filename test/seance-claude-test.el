@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'seance)
 (require 'seance-claude)
 
@@ -73,6 +74,62 @@
 (ert-deftest seance-claude-send-refuses-outside-a-chat-buffer ()
   (with-temp-buffer
     (should-error (seance-claude-send) :type 'user-error)))
+
+;;; The session only counts once the CLI says it made one.
+;;;
+;;; --started used to be set at dispatch. A first turn that died left the
+;;; buffer resuming a session that never existed, which fails forever after.
+
+(ert-deftest seance-claude-first-turn-is-not-started-until-it-succeeds ()
+  (with-temp-buffer
+    (setq seance-claude--session "abc" seance-claude--started nil)
+    (let ((finalize nil))
+      (cl-letf (((symbol-function 'seance-claude--spawn)
+                 (lambda (_target _prompt _extra &optional fin)
+                   (setq finalize fin)
+                   nil)))
+        (insert "## You\n\nhello")
+        (setq seance-claude--input-start (copy-marker (point-min)))
+        (cl-letf (((symbol-function 'seance-context-string-async)
+                   (lambda (k &optional _p) (funcall k "<<IMAGE>>"))))
+          (seance-claude-send))
+        (should finalize)
+        ;; the CLI failed, so the next send must still ask for --session-id
+        (funcall finalize nil)
+        (should-not seance-claude--started)
+        ;; and a clean one flips it
+        (funcall finalize t)
+        (should seance-claude--started)))))
+
+(ert-deftest seance-claude-send-refuses-while-a-turn-is-in-flight ()
+  (with-temp-buffer
+    (setq seance-claude--session "abc"
+          seance-claude--input-start (copy-marker (point-min)))
+    (insert "hello")
+    (cl-letf (((symbol-function 'process-live-p) (lambda (&rest _) t)))
+      (should-error (seance-claude-send) :type 'user-error))))
+
+;;; The message boundary is a marker, not a search for "## You"
+
+(ert-deftest seance-claude-send-takes-the-message-from-the-marker ()
+  ;; an answer that happens to contain a "## You" line used to truncate the
+  ;; next message at whatever Claude wrote
+  (with-temp-buffer
+    (setq seance-claude--session "abc" seance-claude--started t)
+    (insert "## Claude\n\nhere is a heading:\n\n## You\n\nnot your message\n\n## You\n\n")
+    (setq seance-claude--input-start (point-marker))
+    (insert "the real message")
+    (let ((prompt nil))
+      (cl-letf (((symbol-function 'seance-claude--spawn)
+                 (lambda (_target p &rest _) (setq prompt p) nil)))
+        (seance-claude-send))
+      (should (equal "the real message" prompt)))))
+
+;;; Interrupting
+
+(ert-deftest seance-claude-interrupt-refuses-when-nothing-is-running ()
+  (with-temp-buffer
+    (should-error (seance-claude-interrupt) :type 'user-error)))
 
 (provide 'seance-claude-test)
 ;;; seance-claude-test.el ends here

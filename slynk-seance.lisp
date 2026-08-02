@@ -24,9 +24,11 @@
   (:import-from :slynk-api #:defslyfun)
   (:export #:image-context
            #:note-condition
+           #:with-captured-conditions
            #:*max-callers*
            #:*max-conditions*
-           #:*max-neighbors*))
+           #:*max-neighbors*
+           #:*max-definition-chars*))
 
 (in-package :slynk-seance)
 
@@ -38,6 +40,13 @@
 
 (defvar *max-neighbors* 6
   "How many callees to expand one hop out in the focus neighborhood.")
+
+(defvar *max-definition-chars* 600
+  "Hard cap in chars on any one printed definition.
+SBCL keeps the whole lambda expression for a function you defined at the REPL,
+which is every function you actually care about here. Under :FULL we print one
+for the focus symbol plus every neighbor, so uncapped a handful of ordinary
+defuns crowds everything else out of the snapshot.")
 
 (defvar *conditions* '()
   "Recent conditions, most recent first.")
@@ -62,32 +71,87 @@
   (setf *conditions* (subseq-safe *conditions* *max-conditions*))
   condition)
 
+(defmacro with-captured-conditions (&body body)
+  "Run BODY, noting every SERIOUS-CONDITION signalled inside it into the ring.
+   Declines to handle any of them: HANDLER-BIND observes and returns, so
+   whatever would have happened without this still happens, SLDB included.
+
+   Wrapping is not laziness on our part, it is the only thing that works.
+   SLYNK-BACKEND:CALL-WITH-DEBUGGER-HOOK rebinds *DEBUGGER-HOOK* around every
+   request, so a handler installed globally is out of scope by the time your
+   form runs. Being inside the form's dynamic extent is the whole trick.
+
+       (slynk-seance:with-captured-conditions
+         (your-flaky-thing))
+
+   SERIOUS-CONDITION rather than ERROR, so a STORAGE-CONDITION counts too.
+   HANDLER-BIND yourself if you want warnings in there as well."
+  `(handler-bind ((serious-condition #'note-condition))
+     ,@body))
+
 ;;; With a little help(ers) of my friends
 
 (defun resolve-symbol (name package-designator)
   "Reads NAME as a symbol in PACKAGE-DESIGNATOR but no eval. NIL on failure.
    Handles case and package qualifiers via reader, so FOO/foo/pkg:foo all behave
-   the same as they do in the REPL"
-  (let ((*package* (or (find-package package-designator) *package*))
-        (*read-eval* nil))
-    (handler-case
-        (let ((obj (read-from-string name)))
-          (and (symbolp obj) obj))
-      (error () nil))))
+   the same as they do in the REPL.
+
+   The reader interns whatever it reads, and a snapshot has no business leaving
+   symbols behind in the image it is only meant to be describing -- one typo
+   under point would do it, permanently. So the read happens in a scratch
+   package that gets deleted right after, and an unqualified name is then looked
+   up in the real package with FIND-SYMBOL instead of interned into it.
+
+   PKG::NAME for a name that does not exist yet is the case still interned, by
+   the reader, into the package you went out of your way to spell."
+  (let ((home    (or (find-package package-designator) *package*))
+        (scratch (make-package (gensym "SEANCE-READ-") :use '())))
+    (unwind-protect
+         (handler-case
+             (let ((obj (let ((*package* scratch)
+                              (*read-eval* nil))
+                          (read-from-string name))))
+               (cond ((not (symbolp obj)) nil)
+                     ;; unqualified, so the reader parked it in SCRATCH; ask
+                     ;; the real package whether it has one by that name.
+                     ((eq (symbol-package obj) scratch)
+                      (find-symbol (symbol-name obj) home))
+                     (t obj)))
+           (error () nil))
+      (delete-package scratch))))
 
 (defun first-line (string)
   (let ((nl (position #\Newline string)))
     (if nl (subseq string 0 nl) string)))
 
+(defun truncate-string (string limit)
+  "STRING hard-truncated to LIMIT chars, ellipsized when it actually got cut."
+  (if (> (length string) limit)
+      (concatenate 'string (subseq string 0 limit) " ...")
+      string))
+
 (defun truncate-print (object &optional (limit 200))
   "PRIN1 OBJECT with depth/length caps. Hard-truncated to LIMIT chars"
-  (let ((s (let ((*print-length* 20)
-                 (*print-level* 4)
-                 (*print-readably* nil))
-             (prin1-to-string object))))
-    (if (> (length s) limit)
-        (concatenate 'string (subseq s 0 limit) " ...")
-        s)))
+  (truncate-string
+   (let ((*print-length* 20)
+         (*print-level* 4)
+         (*print-readably* nil))
+     (prin1-to-string object))
+   limit))
+
+(defun truncate-definition (lambda-expression)
+  "LAMBDA-EXPRESSION printed for a prompt: downcased, elided, hard-capped.
+Looser depth and length limits than TRUNCATE-PRINT allows, because this is code
+somebody has to follow rather than a REPL value they only need to recognize.
+*PRINT-CASE* does the downcasing that the caller's ~( ~) used to, without also
+flattening any string literals inside the definition."
+  (truncate-string
+   (let ((*print-length* 40)
+         (*print-level* 8)
+         (*print-readably* nil)
+         (*print-case* :downcase))
+     (prin1-to-string lambda-expression))
+   *max-definition-chars*))
 
 (defun xref-names (result)
   "Deduped name strings out of a SLYNK-BACKEND xref RESULT.
@@ -139,7 +203,7 @@
                               (fdefinition symbol))))))
         (cond
           ;; SBCL keeps this for interactive-defined fns. NIL otherwise
-          (lex (format s "~% ~(~S~)" lex))
+          (lex (format s "~% ~A" (truncate-definition lex)))
           (t (let ((arglist (ignore-errors (slynk-backend:arglist symbol))))
                (when (and arglist (not (eq arglist :not-available)))
                  (format s "~% arglist: ~(~A~)" arglist)))))

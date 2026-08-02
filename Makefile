@@ -11,6 +11,16 @@ SLY_DIR ?= $(firstword $(wildcard \
 	$(HOME)/.emacs.d/.local/straight/repos/sly \
 	$(HOME)/.emacs.d/straight/repos/sly))
 
+# Where gptel's elisp lives. Optional: gptel is a soft dependency, and without
+# it the tests that need it skip rather than fail. Set it to exercise them:
+#   make test GPTEL_DIR=/path/to/gptel
+GPTEL_DIR ?= $(firstword $(wildcard \
+	$(HOME)/.config/emacs/.local/straight/repos/gptel \
+	$(HOME)/.emacs.d/.local/straight/repos/gptel \
+	$(HOME)/.emacs.d/straight/repos/gptel))
+
+GPTEL_LOAD = $(if $(GPTEL_DIR),-L "$(GPTEL_DIR)")
+
 test: test-lisp test-elisp
 
 ## Image side: image-context, callers/callees, the conditions ring.
@@ -19,19 +29,28 @@ test-lisp:
 
 ## Emacs side: capture, assemble, and both transports' argument handling.
 ## Needs sly on the load-path.
+##
+## load-prefer-newer, because `load' otherwise takes a stale .elc over a newer
+## .el and only warns about it -- which quietly tests the code you had before
+## your last edit. `make compile' leaves those .elc files lying around, so this
+## is the normal state, not a corner case.
 test-elisp: guard-sly
 	$(EMACS) -Q --batch \
-	  -L . -L test -L "$(SLY_DIR)" -L "$(SLY_DIR)/lib" \
+	  --eval '(setq load-prefer-newer t)' \
+	  -L . -L test -L "$(SLY_DIR)" -L "$(SLY_DIR)/lib" $(GPTEL_LOAD) \
 	  -l test/seance-test.el \
 	  -l test/seance-claude-test.el \
 	  -l test/seance-gptel-test.el \
 	  -f ert-run-tests-batch-and-exit
 
 ## Byte-compile every package; warnings are failures. Core first.
+## gptel goes on the load-path when we have it, so the compiler can actually
+## see its symbols -- that is what turns "you wrote an obsolete variable name"
+## from a runtime surprise into a build failure.
 compile: guard-sly
 	$(EMACS) -Q --batch \
-	  -L . -L "$(SLY_DIR)" -L "$(SLY_DIR)/lib" \
-	  --eval '(setq byte-compile-error-on-warn t)' \
+	  -L . -L "$(SLY_DIR)" -L "$(SLY_DIR)/lib" $(GPTEL_LOAD) \
+	  --eval '(setq load-prefer-newer t byte-compile-error-on-warn t)' \
 	  -f batch-byte-compile seance.el seance-claude.el seance-gptel.el
 
 guard-sly:
@@ -39,5 +58,8 @@ guard-sly:
 	  echo "SLY_DIR is unset and sly was not found. Try: make test SLY_DIR=/path/to/sly"; \
 	  exit 1; }
 
+## run-tests.lisp compiles the fixture into a scratch dir under the system
+## temporary directory, not next to the source, so that is where the fasls are.
 clean:
-	rm -f *.elc test/*.elc test/*.fasl
+	rm -f *.elc test/*.elc
+	rm -rf "$${TMPDIR:-/tmp}/seance-test-build"

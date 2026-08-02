@@ -17,13 +17,23 @@ jobs:
           repository: joaotavora/sly
           path: .sly
 
+      - name: Check out gptel (soft dependency; its tests skip without it)
+        uses: actions/checkout@v4
+        with:
+          repository: karthink/gptel
+          path: .gptel
+
       - name: Install SBCL and Emacs
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends sbcl emacs-nox
 
+      # gptel on the load-path here is what makes writing one of its obsolete
+      # variable names a build failure rather than a surprise years later.
       - name: Byte-compile (warnings are errors)
-        run: make compile SLY_DIR="$GITHUB_WORKSPACE/.sly"
+        run: |
+          make compile SLY_DIR="$GITHUB_WORKSPACE/.sly" \
+                       GPTEL_DIR="$GITHUB_WORKSPACE/.gptel"
 
       - name: Test the image side
         env:
@@ -31,4 +41,10 @@ jobs:
         run: make test-lisp
 
       - name: Test the Emacs side
-        run: make test-elisp SLY_DIR="$GITHUB_WORKSPACE/.sly"
+        run: |
+          make test-elisp SLY_DIR="$GITHUB_WORKSPACE/.sly" \
+                          GPTEL_DIR="$GITHUB_WORKSPACE/.gptel"
+
+      # and once more without it, since gptel really is optional
+      - name: Test the Emacs side without gptel
+        run: make test-elisp SLY_DIR="$GITHUB_WORKSPACE/.sly" GPTEL_DIR=

@@ -57,6 +57,18 @@ caller and condition lists. Small local windows need room to breathe."
   "Hard cap in chars for any single logged form or result."
   :type 'integer)
 
+(defcustom seance-context-limit 20000
+  "Hard cap in chars on the whole assembled snapshot, or nil for no cap.
+Every other limit here is per item -- `seance-form-limit', and the image side's
+own `*max-callers*' and friends -- and none of them bounds the total, which is
+the number that actually has to fit in a model's window.
+
+Trimming takes it off the end, which costs you the tail of the eval log rather
+than the image section that leads. That is the wrong way round if the log is
+what you cared about; raise the cap in that case rather than reordering, since
+the model reads the beginning most carefully anyway."
+  :type '(choice (const :tag "No cap" nil) integer))
+
 (defcustom seance-autoload t
   "When non-nil, seance sets itself up on every new SLY connection: loads
 `seance-slynk-file' into the Lisp and installs capture advice. No
@@ -100,6 +112,7 @@ back a word out of your own prose.")
     (when (or sym pkg)
       (setq seance--last-focus (cons sym pkg)))))
 
+;;;###autoload
 (defun seance-clear-log ()
   "Drop the local eval log."
   (interactive)
@@ -131,6 +144,7 @@ back a word out of your own prose.")
                   (buffer-substring-no-properties beg end)))))
     (when form (seance--record 'def form nil))))
 
+;;;###autoload
 (defun seance-install ()
   "Install capture advice. Runs twice without complaint."
   (interactive)
@@ -139,16 +153,39 @@ back a word out of your own prose.")
   (advice-add 'sly-compile-defun       :before #'seance--note-compile)
   (message "seance: capture installed"))
 
+;;;###autoload
 (defun seance-uninstall ()
-  "Remove capture advice."
+  "Remove capture advice.
+For this session only, and only until the next SLY connection: `seance-autoload'
+puts capture straight back on connect. Set that to nil if you want it to stay
+off. The message says which of the two you just got."
   (interactive)
   (advice-remove 'sly-interactive-eval    #'seance--note-form)
   (advice-remove 'sly-display-eval-result #'seance--note-result)
   (advice-remove 'sly-compile-defun       #'seance--note-compile)
-  (message "seance: capture uninstalled"))
+  (message "seance: capture uninstalled%s"
+           (if seance-autoload
+               " (the next SLY connection will put it back)"
+             "")))
 
 
 ;;; ASSEMBLE
+
+(defun seance--profile (&optional override)
+  "Profile to ask the image for: OVERRIDE if non-nil, else `seance-profile'.
+Each transport keeps its own profile custom that may be nil meaning \"inherit\"
+-- see `seance-claude-profile' and `seance-gptel-profile' -- so they resolve it
+through here rather than each spelling out the same `or'."
+  (or override seance-profile))
+
+(defun seance--trim-context (string)
+  "STRING cut down to `seance-context-limit', saying so where it was cut."
+  (if (and seance-context-limit
+           (> (length string) seance-context-limit))
+      (concat (substring string 0 seance-context-limit)
+              (format "\n;; ... trimmed to %d chars (see `seance-context-limit')\n"
+                      seance-context-limit))
+    string))
 
 (defun seance--render-log ()
   "Render the recent-evals log as a string; empty when the log is empty."
@@ -185,7 +222,7 @@ image answers, which -- if the image is mid-computation, in SLDB, or otherwise
 wedged -- is forever. Nothing on a keystroke path should call this; those go
 through `seance-context-string-async'. Kept for tests and callers that already
 know they want to wait."
-  (let* ((profile (or profile seance-profile))
+  (let* ((profile (seance--profile profile))
          (focus   (seance--focus))
          (image   (condition-case err
                       (sly-eval `(slynk-seance:image-context
@@ -194,7 +231,7 @@ know they want to wait."
                      (format (concat ";; SLYNK-SEANCE:IMAGE-CONTEXT failed: %S\n"
                                      ";; Is slynk-seance.lisp loaded in the image?\n")
                              err)))))
-    (concat image (seance--render-log))))
+    (seance--trim-context (concat image (seance--render-log)))))
 
 (defun seance--image-context-async (focus profile k)
   "Fetch the in-image snapshot for FOCUS at PROFILE, then call K with the string.
@@ -229,7 +266,7 @@ Resolves the focus and log now, in the current buffer, then fires the image RPC
 without blocking. K runs with the assembled image-plus-log string, back in the
 buffer that was current when this was called -- so a chat buffer's callback
 still edits the chat buffer. PROFILE overrides `seance-profile' for this call."
-  (let* ((profile (or profile seance-profile))
+  (let* ((profile (seance--profile profile))
          (focus   (seance--focus))
          (log     (seance--render-log))
          (buf     (current-buffer)))
@@ -238,8 +275,9 @@ still edits the chat buffer. PROFILE overrides `seance-profile' for this call."
      (lambda (image)
        (when (buffer-live-p buf)
          (with-current-buffer buf
-           (funcall k (concat image log))))))))
+           (funcall k (seance--trim-context (concat image log)))))))))
 
+;;;###autoload
 (defun seance-preview-context (&optional profile)
   "Show exactly what would get sent, without sending it.
 With a prefix argument, ask which PROFILE. Start here when an answer looks

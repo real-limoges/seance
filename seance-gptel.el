@@ -34,6 +34,7 @@
 (declare-function gptel-send        "gptel")
 (declare-function gptel-mode        "gptel")
 (declare-function gptel-make-openai "gptel-openai")
+(defvar gptel-system-prompt)
 (defvar gptel--system-message)
 (defvar gptel-backend)
 (defvar gptel-model)
@@ -50,6 +51,25 @@
 (defcustom seance-gptel-model nil
   "GPTEL model symbol."
   :type 'symbol)
+
+;; The backend object above cannot go in your init: it is a struct that only
+;; exists once gptel has built it. These three can, and seance builds the
+;; backend from them on first use -- so picking a server is a thing you do
+;; once, rather than every session.
+
+(defcustom seance-gptel-host nil
+  "Host and port of an OpenAI-compatible server, like \"localhost:8080\".
+Set this and `seance-gptel-model-name' in your init to skip running
+`seance-gptel-use-openai-compatible' every time Emacs starts."
+  :type '(choice (const :tag "Not set" nil) string))
+
+(defcustom seance-gptel-model-name nil
+  "Model to ask that server for, as a string. See `seance-gptel-host'."
+  :type '(choice (const :tag "Not set" nil) string))
+
+(defcustom seance-gptel-backend-name "local"
+  "Label for the backend built out of `seance-gptel-host'."
+  :type 'string)
 
 (defcustom seance-gptel-profile nil
   "Snapshot size for this backend, overriding `seance-profile'.
@@ -79,27 +99,70 @@ Small models follow tight instructions better than vibes."
   (unless (featurep 'gptel)
     (user-error "seance-gptel: gptel not available: install and configure")))
 
+(defun seance-gptel--require-openai ()
+  "Like `seance-gptel--require', and make sure `gptel-make-openai' is callable.
+That constructor lives in gptel-openai.el, which a package install autoloads
+and a bare load-path does not. Asking for it by name beats dying of
+void-function halfway through configuring a backend."
+  (seance-gptel--require)
+  (unless (fboundp 'gptel-make-openai)
+    (require 'gptel-openai nil t))
+  (unless (fboundp 'gptel-make-openai)
+    (user-error "seance-gptel: gptel is loaded but gptel-openai did not")))
+
 ;;;###autoload
-(defun seance-gptel-use-openai-compatible (name host model)
+(defun seance-gptel-use-openai-compatible (name host model &optional save)
   "Point seance at a local OpenAI-compatible server (llama.cpp, ...).
-NAME labels the backend, HOST looks like \"localhost:8080\", MODEL is a symbol."
+NAME labels the backend, HOST looks like \"localhost:8080\", MODEL is a symbol.
+
+The choice is written back to `seance-gptel-backend-name', `seance-gptel-host'
+and `seance-gptel-model-name', so it can be rebuilt without asking you again.
+With a prefix argument, SAVE is non-nil and those get saved through Custom too,
+which is what makes the choice outlive this Emacs."
   (interactive
    (progn
-     (seance-gptel--require)
-     (list (read-string "Backend name: " "local")
-           (read-string "Host (host:port): " "localhost:8080")
-           (intern (read-string "Model: ")))))
-  (seance-gptel--require)
+     (seance-gptel--require-openai)
+     (list (read-string "Backend name: " (or seance-gptel-backend-name "local"))
+           (read-string "Host (host:port): " (or seance-gptel-host "localhost:8080"))
+           (intern (read-string "Model: " seance-gptel-model-name))
+           current-prefix-arg)))
+  (seance-gptel--require-openai)
   (setq seance-gptel-backend (gptel-make-openai name
                                                 :host host
                                                 :protocol "http"
                                                 :stream t
                                                 :models (list model))
-        seance-gptel-model model)
-  (message "seance-gptel: using %s @ %s" model host))
+        seance-gptel-model model
+        seance-gptel-backend-name name
+        seance-gptel-host host
+        seance-gptel-model-name (symbol-name model))
+  (when save
+    (dolist (v '(seance-gptel-backend-name seance-gptel-host seance-gptel-model-name))
+      (customize-save-variable v (symbol-value v))))
+  (message "seance-gptel: using %s @ %s%s" model host (if save " (saved)" "")))
+
+(defun seance-gptel--ensure-backend ()
+  "The backend to talk to, built from the customs when we do not have one yet.
+Nil when there is nothing configured to build from, which is the case worth
+telling the user about."
+  (or seance-gptel-backend
+      (when (and seance-gptel-host seance-gptel-model-name)
+        (seance-gptel-use-openai-compatible seance-gptel-backend-name
+                                            seance-gptel-host
+                                            (intern seance-gptel-model-name))
+        seance-gptel-backend)))
 
 
 ;;; Transport
+
+(defun seance-gptel--system-variable ()
+  "The variable this gptel keeps its buffer-local system prompt in.
+gptel renamed it: `gptel--system-message' is now an obsolete alias pointing at
+`gptel-system-prompt'. Picking whichever one is actually bound keeps current
+and older gptel both working, and keeps us off a name that will eventually go
+away -- the alias still works today, so nothing here is urgent, but writing to
+an obsolete variable is how you find out it was dropped."
+  (if (boundp 'gptel-system-prompt) 'gptel-system-prompt 'gptel--system-message))
 
 ;; Re-snapshot the image before each send. The image moved. It always moves.
 (defun seance-gptel-send ()
@@ -113,10 +176,10 @@ send fires once it lands."
   ;; see `seance--focus'
   (seance-context-string-async
    (lambda (ctx)
-     (setq-local gptel--system-message
-                 (concat seance-gptel-preamble "\n\n" ctx))
+     (set (make-local-variable (seance-gptel--system-variable))
+          (concat seance-gptel-preamble "\n\n" ctx))
      (call-interactively #'gptel-send))
-   (or seance-gptel-profile seance-profile)))
+   (seance--profile seance-gptel-profile)))
 
 (defvar seance-gptel-chat-mode-map
   (let ((m (make-sparse-keymap)))
@@ -137,11 +200,14 @@ Ask a question, send it with your usual gptel key. The snapshot gets refreshed
 into the system message on the way out."
   (interactive)
   (seance-gptel--require)
-  (let ((buf (get-buffer-create seance-gptel-buffer-name)))
+  (let ((backend (seance-gptel--ensure-backend))
+        (buf     (get-buffer-create seance-gptel-buffer-name)))
+    (unless backend
+      (message "seance-gptel: no backend yet; M-x seance-gptel-use-openai-compatible"))
     (with-current-buffer buf
       (unless (bound-and-true-p gptel-mode) (gptel-mode 1))
-      (when seance-gptel-backend (setq-local gptel-backend seance-gptel-backend))
-      (when seance-gptel-model   (setq-local gptel-model seance-gptel-model))
+      (when backend            (setq-local gptel-backend backend))
+      (when seance-gptel-model (setq-local gptel-model seance-gptel-model))
       (setq-local gptel-stream t)       ; local models are slow, stream it
       (seance-gptel-chat-mode 1)
       (goto-char (point-max)))
