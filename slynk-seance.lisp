@@ -33,7 +33,8 @@
 (in-package :slynk-seance)
 
 (defvar *max-callers* 12
-  "Prevents hot function from blowing up")
+  "Cap on the caller list. A hot function has hundreds of them and nobody reads
+past the first dozen, so this stops one from swallowing the whole snapshot.")
 
 (defvar *max-conditions* 5
   "Size of recent-conditions ring.")
@@ -51,22 +52,22 @@ defuns crowds everything else out of the snapshot.")
 (defvar *conditions* '()
   "Recent conditions, most recent first.")
 
-;;; Conditions: Manual for V1
+;;; Conditions: manual for v1.
 ;;;
-;;; slynk rebinds *DEBUGGER-HOOK* per request  - so we can shadow a global hook
-;;; inside slynk evals (auto-capture is maybe v2 if i feel like it).
-;;; iFeeds the ring explicitly
+;;; slynk rebinds *DEBUGGER-HOOK* per request, so a global hook is already out of
+;;; scope by the time your form runs. Auto-capture is maybe v2, if i feel like
+;;; it. Until then you feed the ring yourself:
 ;;;
 ;;;   (handler-bind ((error #'slynk-seance:note-condition)) ...)
 ;;;
-;;; I guess you can also push from your own top-level handler?
+;;; or push from your own top-level handler. Whatever gets the condition in.
 
 (defun subseq-safe (list n)
   (subseq list 0 (min n (length list))))
 
 (defun note-condition (condition)
-  "Record CONDITION into recent-conditions ring.
-   Also returns CONDITION as well so it can sit transparently in a HANDLER-BIND"
+  "Push CONDITION onto the recent-conditions ring and hand it right back, so
+   this can sit inside a HANDLER-BIND without swallowing anything."
   (push (princ-to-string condition) *conditions*)
   (setf *conditions* (subseq-safe *conditions* *max-conditions*))
   condition)
@@ -131,7 +132,7 @@ defuns crowds everything else out of the snapshot.")
       string))
 
 (defun truncate-print (object &optional (limit 200))
-  "PRIN1 OBJECT with depth/length caps. Hard-truncated to LIMIT chars"
+  "PRIN1 OBJECT with depth/length caps, then hard-truncated to LIMIT chars."
   (truncate-string
    (let ((*print-length* 20)
          (*print-level* 4)
@@ -226,9 +227,9 @@ flattening any string literals inside the definition."
     (&optional focus-name
                (package-name (package-name *package*))
                (profile :lean))
-  "Returns a snapshot of the live image for LLM prefix PROFILE is :lean or :full.
-FOCUS-NAME is the symbol at a point or NIL. Emacs concatenates its own eval-log section
-onto whatever this returns"
+  "A snapshot of the live image, ready to prefix onto an LLM prompt. PROFILE is
+:lean or :full. FOCUS-NAME is the symbol under point, or NIL when there wasn't
+one. Emacs staples its own eval-log section onto whatever this hands back."
   (let* ((full   (eq profile :full))
          (n-call (if full *max-callers* (min 6 *max-callers*))))
     (with-output-to-string (out)

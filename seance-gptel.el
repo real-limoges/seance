@@ -76,7 +76,7 @@ Set this and `seance-gptel-model-name' in your init to skip running
 nil inherits `seance-profile', which is `:lean' -- about right for the small
 local models this thing usually points at."
   :type '(choice (const :tag "Inherit seance-profile" nil)
-                 (const :lean) (const :full)))
+          (const :lean) (const :full)))
 
 (defcustom seance-gptel-buffer-name "*seance-gptel*"
   "Buffer for the interactive chat."
@@ -102,13 +102,13 @@ Small models follow tight instructions better than vibes."
 (defun seance-gptel--require-openai ()
   "Like `seance-gptel--require', and make sure `gptel-make-openai' is callable.
 That constructor lives in gptel-openai.el, which a package install autoloads
-and a bare load-path does not. Asking for it by name beats dying of
+and a bare `load-path` does not. Asking for it by name beats dying of
 void-function halfway through configuring a backend."
   (seance-gptel--require)
   (unless (fboundp 'gptel-make-openai)
     (require 'gptel-openai nil t))
   (unless (fboundp 'gptel-make-openai)
-    (user-error "seance-gptel: gptel is loaded but gptel-openai did not")))
+    (user-error "Seance-gptel: gptel is loaded but gptel-openai did not")))
 
 ;;;###autoload
 (defun seance-gptel-use-openai-compatible (name host model &optional save)
@@ -128,10 +128,10 @@ which is what makes the choice outlive this Emacs."
            current-prefix-arg)))
   (seance-gptel--require-openai)
   (setq seance-gptel-backend (gptel-make-openai name
-                                                :host host
-                                                :protocol "http"
-                                                :stream t
-                                                :models (list model))
+                               :host host
+                               :protocol "http"
+                               :stream t
+                               :models (list model))
         seance-gptel-model model
         seance-gptel-backend-name name
         seance-gptel-host host

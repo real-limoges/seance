@@ -12,14 +12,14 @@ It's half ELisp for integrating and half Common Lisp for working with the image.
 
 ## Two transports
 
-- **`seance-claude`** — shells out to the `claude` CLI, headless. Runs on your
+- **`seance-claude`**: shells out to the `claude` CLI, headless. Runs on your
   Claude Code subscription, so no API key. That's the only reason it exists.
-- **`seance-gptel`** — gptel, pointed at any OpenAI-compatible server. llama.cpp,
+- **`seance-gptel`**: gptel, pointed at any OpenAI-compatible server. llama.cpp,
   Ollama, MLX, whatever. Nothing leaves the box.
 
 gptel could talk to Claude too, but it wants an API key for the privilege. I'm cheap.
 
-Load one or both. Loading both won't log your evals twice — there's one capture
+Load one or both. Loading both won't log your evals twice: there's one capture
 ring and one connection hook in the core. So rest easy, multi-model native.
 
 ## You'll need
@@ -45,7 +45,7 @@ or gptel plus something to point it at for the other. The image side leans on
     (define-key sly-mode-map (kbd "C-c C-S-l") #'seance-gptel)))
 ```
 
-`slynk-seance.lisp` has to sit next to `seance.el` — that's how it gets found. Don't fight it.
+`slynk-seance.lisp` has to sit next to `seance.el`: that's how it gets found. Don't fight it.
 Otherwise just clone it and shove the directory on your `load-path`.
 
 Nothing to set up per session. On every SLY connection the core loads the image
@@ -124,12 +124,12 @@ is no seam in slynk to hang it on that wouldn't break the next time slynk moves.
 Everything's a defcustom; `C-h v seance-` will show you the lot. The ones you'll
 actually touch:
 
-- `seance-profile` — `:lean` or `:full`. Lean trims the snapshot down for small
+- `seance-profile`: `:lean` or `:full`. Lean trims the snapshot down for small
   local models, which have small windows and big opinions. `seance-claude-profile`
   overrides it to `:full`, because Claude can take it.
-- `seance-claude-extra-args` — `'("--disallowed-tools" "Edit" "Write" "Bash")` if
+- `seance-claude-extra-args`: `'("--disallowed-tools" "Edit" "Write" "Bash")` if
   you want it answering questions rather than rearranging your repo.
-- `seance-claude-lean` — on by default. Runs the CLI in a neutral directory so it
+- `seance-claude-lean`: on by default. Runs the CLI in a neutral directory so it
   doesn't drag your whole project's `CLAUDE.md` and hooks along for the ride.
 - `seance-context-limit`: 20000 chars, or nil for no ceiling. Everything else
   here caps one item at a time; this caps the assembled total, which is the
@@ -161,7 +161,7 @@ suite both ways, because both are real installs.
 You didn't think it would be this easy. `slynk-backend:calls-who` returns `:NOT-IMPLEMENTED` on SBCL. 
 It doesn't signal, it just hands you a keyword and lets you find out the hard way. So `callees` asks
 `sb-introspect` directly instead. Without that the callee list is silently always
-empty, and the one-hop expansion — the whole point of `:full` — never runs.
+empty, and the one-hop expansion (the whole point of `:full`) never runs.
 
 Ask me how I know (plz don't)
 
