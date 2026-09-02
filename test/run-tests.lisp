@@ -14,7 +14,7 @@
 (require :asdf)
 (require :uiop)
 
-;;; ---------------------------------------------------------------- harness
+;;; harness
 
 (defvar *passed* 0)
 (defvar *failed* '())
@@ -36,7 +36,7 @@
 (defun contains (needle haystack)
   (and (search needle haystack) t))
 
-;;; ------------------------------------------------------------ locate slynk
+;;; locate slynk
 
 (defun slynk-loader-path ()
   (let ((env (uiop:getenv "SEANCE_SLYNK_LOADER")))
@@ -64,7 +64,7 @@
   (format *error-output* "~&slynk loaded but :SLYNK-API is missing.~%")
   (uiop:quit 2))
 
-;;; ------------------------------------------------- load fixture + unit under test
+;;; load fixture + unit under test
 
 (defvar *here* (uiop:pathname-directory-pathname *load-truename*))
 
@@ -84,7 +84,7 @@
 (defun image-context (&rest args)
   (apply #'call-sq "IMAGE-CONTEXT" args))
 
-;;; ------------------------------------------------------------------ tests
+;;; tests
 
 (section "loading"
   (chk "package :slynk-seance exists" (and (find-package :slynk-seance) t))
@@ -249,7 +249,7 @@
   (chk "profile defaults to :lean"
        (contains "(lean)" (image-context "focus" "SEANCE-FIXTURE"))))
 
-;;; ----------------------------------------------------------------- report
+;;; report
 
 (format t "~&~%~A~%" (make-string 60 :initial-element #\-))
 (if *failed*

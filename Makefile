@@ -31,7 +31,7 @@ test-lisp:
 ## Needs sly on the load-path.
 ##
 ## load-prefer-newer, because `load' otherwise takes a stale .elc over a newer
-## .el and only warns about it -- which quietly tests the code you had before
+## .el and only warns about it, which quietly tests the code you had before
 ## your last edit. `make compile' leaves those .elc files lying around, so this
 ## is the normal state, not a corner case.
 test-elisp: guard-sly
@@ -45,7 +45,7 @@ test-elisp: guard-sly
 
 ## Byte-compile every package; warnings are failures. Core first.
 ## gptel goes on the load-path when we have it, so the compiler can actually
-## see its symbols -- that is what turns "you wrote an obsolete variable name"
+## see its symbols: that is what turns "you wrote an obsolete variable name"
 ## from a runtime surprise into a build failure.
 compile: guard-sly
 	$(EMACS) -Q --batch \

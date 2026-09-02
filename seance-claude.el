@@ -33,7 +33,7 @@
   :group 'seance)
 
 (defcustom seance-claude-program "claude"
-  "The Claude Code CLI we shell out to.
+  "The Claude Code CLI this shells out to.
 Headless (`-p'), on whatever subscription the CLI is logged into -- no API
 key. Set an absolute path (e.g. \"/opt/homebrew/bin/claude\") when a GUI
 Emacs can't find it on PATH."
@@ -54,7 +54,7 @@ Q&A that never touches your repo."
 Claude's window is big enough that the full one is worth sending. nil to
 inherit `seance-profile' instead."
   :type '(choice (const :tag "Inherit seance-profile" nil)
-                 (const :lean) (const :full)))
+          (const :lean) (const :full)))
 
 (defcustom seance-claude-buffer-name "*seance-claude*"
   "Buffer name for the multi-turn chat."
@@ -83,13 +83,13 @@ not your whole Claude Code project payload. Cheaper, faster, easier on the
 ;; (I pick up buffers and put them down)
 
 (defun seance-claude--executable ()
-  "Where the claude CLI lives, or an error that says something useful."
+  "Where the claude CLI lives, or an error that states something useful."
   (or (executable-find seance-claude-program)
       (and (file-name-absolute-p seance-claude-program)
            (file-executable-p seance-claude-program)
            seance-claude-program)
       (user-error
-       "seance-claude: can't find `%s' (set `seance-claude-program' to its full path)"
+       "Seance-claude: can't find `%s' (set `seance-claude-program' to its full path)"
        seance-claude-program)))
 
 (defun seance-claude--base-args (extra)
@@ -224,16 +224,20 @@ from one that did not -- see how `seance-claude-send' gates `--resume'."
 ;;; turns share history; re-running folds a fresh snapshot into the next message.
 
 (defvar-local seance-claude--session nil "Claude session id for this chat buffer.")
+
 (defvar-local seance-claude--started nil
   "Non-nil once the CLI has actually completed a turn on this session.
 Set from the process sentinel on a clean exit, never at dispatch: it decides
 between `--session-id' and `--resume', and resuming a session the CLI never
 managed to create fails every time after.")
+
 (defvar-local seance-claude--refresh nil "Non-nil to ride a fresh snapshot next turn.")
+
 (defvar-local seance-claude--input-start nil
   "Marker at the start of the message you are composing.
 Laid down with every `## You' prompt. Beats searching back for that heading,
 which cannot tell our prompt from the same line inside an answer Claude wrote.")
+
 (defvar-local seance-claude--proc nil
   "The in-flight `claude' process for this chat buffer, if there is one.")
 
@@ -263,14 +267,14 @@ which cannot tell our prompt from the same line inside an answer Claude wrote.")
   "Send the text after the last `## You' prompt as the next turn in this chat."
   (interactive)
   (unless seance-claude--session
-    (user-error "seance-claude: not a chat buffer (use M-x seance-claude)"))
+    (user-error "Seance-claude: not a chat buffer (use M-x seance-claude)"))
   (when (process-live-p seance-claude--proc)
-    (user-error "seance-claude: still working on the last one (C-c C-k to stop it)"))
+    (user-error "Seance-claude: still working on the last one (C-c C-k to stop it)"))
   (let* ((start (or (and (markerp seance-claude--input-start)
                          (marker-position seance-claude--input-start))
                     (point-min)))
          (msg (string-trim (buffer-substring-no-properties start (point-max)))))
-    (when (string-empty-p msg) (user-error "seance-claude: empty message"))
+    (when (string-empty-p msg) (user-error "Seance-claude: empty message"))
     (let* ((want-ctx (or (not seance-claude--started) seance-claude--refresh))
            (extra    (if seance-claude--started
                          (list "--resume" seance-claude--session)
@@ -316,7 +320,7 @@ which cannot tell our prompt from the same line inside an answer Claude wrote.")
   "Stop the `claude' process currently answering in this buffer."
   (interactive)
   (unless (process-live-p seance-claude--proc)
-    (user-error "seance-claude: nothing in flight"))
+    (user-error "Seance-claude: nothing in flight"))
   (process-put seance-claude--proc 'seance-claude-interrupted t)
   (delete-process seance-claude--proc)
   (message "seance-claude: stopped"))
@@ -343,7 +347,7 @@ happens to hold the default name."
       (if existing
           (progn
             (setq seance-claude--refresh t)
-            (message "seance-claude: a fresh image snapshot will ride along with your next send"))
+            (message "Seance-claude: a fresh image snapshot will ride along with your next send"))
         (when (fboundp 'markdown-mode) (markdown-mode))
         (seance-claude-chat-mode 1)
         (setq seance-claude--session (seance-claude--uuid)
